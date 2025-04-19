@@ -1,18 +1,19 @@
+// AILearningAssistant.tsx
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
+import { sendMessageToGemini } from '../../api/gemini';
 import Link from 'next/link';
-import { useTheme } from '../../context/ThemeContext';
-import ThemeSelector from '../../components/ThemeSelector';
 
-interface Message {
-  role: 'user' | 'assistant' | 'system';
+// Define types for our component
+type MessageType = {
+  role: 'user' | 'assistant';
   content: string;
-  assistant?: 'tutor' | 'buddy';
-}
+  assistant?: 'socratic' | 'buddy';
+};
 
-// Frustration detection function
-const detectFrustration = (text: string): boolean => {
+// Improved frustration detection function from the second file
+const detectFrustration = (text: string, currentLevel: number): number => {
   const frustrationPhrases = [
     'you are dumb',
     'answer me fast',
@@ -30,275 +31,245 @@ const detectFrustration = (text: string): boolean => {
     'i don\'t get it'
   ];
   
-  return frustrationPhrases.some(phrase => 
+  // Check if the message contains any frustration patterns
+  const containsFrustration = frustrationPhrases.some(phrase => 
     text.toLowerCase().includes(phrase.toLowerCase())
   );
+  
+  // Increase frustration if patterns detected
+  if (containsFrustration) {
+    return Math.min(currentLevel + 1, 5);
+  }
+  
+  // Decrease frustration slightly if no frustration detected
+  return Math.max(currentLevel - 0.25, 0);
 };
 
-// Sample Socratic responses for different subjects
-const socraticResponses = {
-  general: [
-    "Can you explain what you already know about this topic?",
-    "What part of this problem is giving you the most difficulty?",
-    "What approaches have you considered so far?",
-    "Can you break this problem down into smaller steps?",
-    "How would you explain this concept to someone else?",
-    "Can you think of any similar problems you've solved before?",
-    "What information would help you solve this problem?",
-    "What assumptions are you making here?",
-    "What would happen if we approached this from a different angle?"
-  ],
-  math: [
-    "What formulas or principles might be relevant to this problem?",
-    "Can you visualize this problem in a different way?",
-    "What happens if you try a simpler version of this problem first?",
-    "Can you identify any patterns in the given information?",
-    "What properties of these numbers/shapes/equations could be useful?"
-  ],
-  science: [
-    "What scientific principles might apply in this situation?",
-    "How could we design an experiment to test this?",
-    "Can you predict what might happen if we change one variable?",
-    "How does this relate to other phenomena we've observed?",
-    "What evidence would support or refute this hypothesis?"
-  ]
-};
-
-export default function AiTutor() {
-  const { currentTheme } = useTheme();
-  const colors = currentTheme.colors;
-
-  const [input, setInput] = useState('');
-  const [messages, setMessages] = useState<Message[]>([
-    { 
-      role: 'assistant', 
-      content: "Hello! I'm your AI tutor. I'm here to help you learn through guided questions rather than giving direct answers. What topic or problem would you like to explore today?",
-      assistant: 'tutor'
+export default function AILearningAssistant() {
+  const [messages, setMessages] = useState<MessageType[]>([
+    {
+      role: 'assistant',
+      content: "Hi there! I'm Buddy, your direct-answer assistant. I'll give you straightforward explanations without the Socratic method. How can I help you today?",
+      assistant: 'buddy'
     }
   ]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [activeAssistant, setActiveAssistant] = useState<'tutor' | 'buddy'>('tutor');
+  const [input, setInput] = useState<string>('');
+  const [mode, setMode] = useState<'socratic' | 'buddy'>('buddy');
+  const [frustrationLevel, setFrustrationLevel] = useState<number>(0);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  // Auto-scroll to bottom of messages
+  // Auto-scroll to bottom of chat
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    scrollToBottom();
   }, [messages]);
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || isLoading) return;
-    
-    // Add user message
-    const userMessage: Message = { role: 'user', content: input };
+
+    // Add user message to chat
+    const userMessage: MessageType = { role: 'user', content: input, assistant: mode };
     setMessages(prev => [...prev, userMessage]);
-    
-    // Check for frustration
-    const frustrated = detectFrustration(input);
-    
-    // Start loading
-    setIsLoading(true);
-    
-    // Prepare messages for API
-    const apiMessages = messages
-      .filter(msg => msg.role !== 'system' && (msg.assistant === activeAssistant || msg.role === 'user'))
-      .concat(userMessage);
-    
-    // Define API endpoints based on assistant type
-    const apiEndpoints = activeAssistant === 'tutor' 
-      ? [
-          '/api/google-ai-tutor',  // Try Google AI first for tutor
-          '/api/ai-tutor',         // Then try OpenAI for tutor
-          '/api/fallback-ai-tutor' // Finally use our fallback option for tutor
-        ]
-      : [
-          '/api/buddy-ai',         // Try Google AI first for buddy
-          '/api/fallback-ai-tutor' // Use fallback for buddy
-        ];
-    
-    // Try each endpoint until one succeeds
-    let succeeded = false;
-    
-    for (const endpoint of apiEndpoints) {
-      if (succeeded) break;
-      
-      try {
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            messages: apiMessages,
-          }),
-        });
-
-        if (!response.ok) {
-          continue; // Try the next endpoint
-        }
-
-        const data = await response.json();
-        
-        // Add AI response
-        if (data.message) {
-          setMessages(prev => [...prev, {
-            role: data.message.role || 'assistant',
-            content: data.message.content,
-            assistant: activeAssistant
-          }]);
-          succeeded = true;
-        }
-      } catch (error) {
-        console.error(`Error with AI assistant endpoint ${endpoint}:`, error);
-        // Continue to next endpoint
-      }
-    }
-    
-    // If all endpoints failed, add a fallback message
-    if (!succeeded) {
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        content: activeAssistant === 'tutor'
-          ? (frustrated 
-              ? "I understand your frustration. To answer your question directly: you should focus on understanding the core principles first, then apply them to your specific problem. Let's break it down step by step in a more straightforward way."
-              : "I'll help you work through this. What specific part of the problem are you struggling with? Let's approach it methodically.")
-          : "Based on your question, here's what you need to know: The key concepts involved are interrelated and build on fundamental principles. I'd need more specific details to give you a complete answer, but I hope this helps you get started.",
-        assistant: activeAssistant
-      }]);
-    }
-    
-    // Clear input and stop loading
     setInput('');
-    setIsLoading(false);
+    setIsLoading(true);
+
+    try {
+      // Filter messages to only include ones relevant to current assistant mode
+      const relevantMessages = messages
+        .filter(msg => msg.role !== 'system' && (msg.assistant === mode || msg.role === 'user'))
+        .concat(userMessage);
+
+      // Determine frustration level based on current message (only for Socratic mode)
+      const newFrustrationLevel = mode === 'socratic' ? detectFrustration(input, frustrationLevel) : 0;
+      if (mode === 'socratic') {
+        setFrustrationLevel(newFrustrationLevel);
+      }
+
+      // Call Gemini API
+      const data = await sendMessageToGemini(relevantMessages, mode, newFrustrationLevel);
+      
+      // Add AI response to messages
+      if (data.message && data.message.content) {
+        setMessages(prev => [...prev, { 
+          role: 'assistant', 
+          content: data.message.content,
+          assistant: mode
+        }]);
+      }
+    } catch (error) {
+      console.error('Error getting response:', error);
+      
+      // Fallback responses based on assistant type and frustration
+      const fallbackMessage = mode === 'socratic'
+        ? (frustrationLevel >= 3
+          ? "I understand this might be frustrating. Let me give you some more direct guidance. What specific part are you struggling with?"
+          : "I'm here to help you think through this. What part of the problem would you like to explore first?")
+        : "I'm here to help! Let me provide a straightforward answer to your question.";
+          
+      setMessages(prev => [...prev, { 
+        role: 'assistant', 
+        content: fallbackMessage,
+        assistant: mode
+      }]);
+    } finally {
+      setIsLoading(false);
+      // Focus back on input after response
+      inputRef.current?.focus();
+    }
   };
 
-  const switchAssistant = (assistant: 'tutor' | 'buddy') => {
-    if (activeAssistant !== assistant) {
-      setActiveAssistant(assistant);
+  const switchMode = (newMode: 'socratic' | 'buddy') => {
+    if (newMode === mode) return;
+    
+    setMode(newMode);
+    setFrustrationLevel(0);
+    
+    // Add a welcome message for the new mode
+    const welcomeMessage = newMode === 'socratic' 
+      ? "I'm now in Socratic mode. Instead of giving direct answers, I'll guide you through questions to help you discover the answers yourself. What would you like to explore?"
+      : "Hi there! I'm Buddy, your direct-answer assistant. I'll give you straightforward explanations without the Socratic method. How can I help you today?";
       
-      // Add a transition message from the new assistant
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        content: assistant === 'tutor' 
-          ? "I'm your Socratic Tutor now. I'll guide your learning through questions to help you discover answers for yourself. What would you like to explore?"
-          : "Hi there! I'm Buddy, your direct-answer assistant. I'll give you straightforward explanations without the Socratic method. How can I help you today?",
-        assistant: assistant
-      }]);
-    }
+    setMessages([
+      { role: 'assistant', content: welcomeMessage, assistant: newMode }
+    ]);
+  };
+
+  const toggleTheme = () => {
+    setTheme(theme === 'dark' ? 'light' : 'dark');
   };
 
   return (
-    <div className={`min-h-screen ${colors.background} flex flex-col`}>
+    <div className={`flex flex-col h-screen w-full ${theme === 'dark' ? 'bg-gray-900 text-white' : 'bg-white text-gray-800'}`}>
       {/* Header */}
-      <header className={`${colors.card} shadow`}>
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
-          <h1 className={`text-2xl font-bold ${colors.text}`}>AI Learning Assistant</h1>
-          <div className="flex items-center space-x-4">
-            <div className="flex items-center">
-              <span className={`h-2.5 w-2.5 rounded-full ${isLoading ? 'bg-yellow-500' : 'bg-green-500'} mr-2`}></span>
-              <span className={`text-sm ${colors.text}`}>{isLoading ? 'Thinking...' : 'Online'}</span>
-            </div>
-            <ThemeSelector />
-            <Link href="/student/dashboard" className={`text-blue-600 hover:text-blue-800`}>
-              Back to Dashboard
-            </Link>
+      <header className={`flex items-center justify-between px-6 py-3 ${theme === 'dark' ? 'bg-gray-800' : 'bg-blue-600 text-white'}`}>
+        <h1 className="text-xl font-bold">AI Learning Assistant</h1>
+        <div className="flex items-center space-x-4">
+          <div className="flex items-center">
+            <span className={`h-2.5 w-2.5 rounded-full ${isLoading ? 'bg-yellow-500' : 'bg-green-500'} mr-2`}></span>
+            <span className="text-sm">{isLoading ? 'Thinking...' : 'Online'}</span>
           </div>
+          <div className="flex items-center space-x-2">
+            <button 
+              onClick={toggleTheme}
+              className={`px-3 py-1 rounded ${theme === 'dark' ? 'bg-blue-500' : 'bg-blue-700'}`}
+            >
+              Theme: {theme === 'dark' ? 'Dark' : 'Light'}
+            </button>
+          </div>
+          <Link href="/student/dashboard" className="text-blue-400 hover:text-blue-300">
+            Dashboard
+          </Link>
         </div>
       </header>
 
-      {/* Assistant Switcher */}
-      <div className="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-4">
-        <div className="flex space-x-2 md:space-x-4">
-          <button
-            onClick={() => switchAssistant('tutor')}
-            className={`flex-1 px-4 py-2 rounded-t-lg font-medium text-sm md:text-base transition-colors ${
-              activeAssistant === 'tutor' 
-                ? `${colors.primary} ${colors.buttonText}` 
-                : `bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300`
-            }`}
-          >
-            Socratic Tutor
-          </button>
-          <button
-            onClick={() => switchAssistant('buddy')}
-            className={`flex-1 px-4 py-2 rounded-t-lg font-medium text-sm md:text-base transition-colors ${
-              activeAssistant === 'buddy' 
-                ? `${colors.secondary} ${colors.buttonText}` 
-                : `bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300`
-            }`}
-          >
-            Buddy (Direct Answers)
-          </button>
-        </div>
+      {/* Mode selector */}
+      <div className="flex space-x-4 p-4">
+        <button
+          onClick={() => switchMode('socratic')}
+          className={`flex-1 py-2 rounded-md text-center ${
+            mode === 'socratic' 
+              ? theme === 'dark' ? 'bg-purple-600' : 'bg-purple-500 text-white' 
+              : theme === 'dark' ? 'bg-gray-800 border border-gray-700' : 'bg-gray-100 border'
+          }`}
+        >
+          Socratic Tutor
+        </button>
+        <button
+          onClick={() => switchMode('buddy')}
+          className={`flex-1 py-2 rounded-md text-center ${
+            mode === 'buddy' 
+              ? theme === 'dark' ? 'bg-purple-600' : 'bg-purple-500 text-white' 
+              : theme === 'dark' ? 'bg-gray-800 border border-gray-700' : 'bg-gray-100 border'
+          }`}
+        >
+          Buddy (Direct Answers)
+        </button>
       </div>
 
-      {/* Chat interface */}
-      <div className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 pb-8 flex flex-col">
-        <div className={`${colors.card} rounded-lg shadow flex-1 flex flex-col overflow-hidden`}>
-          {/* Mode indicator */}
-          <div className={`px-4 py-2 text-sm ${activeAssistant === 'tutor' ? colors.accent : `bg-${colors.secondary.replace('bg-', '')}/20`} ${colors.text}`}>
-            {activeAssistant === 'tutor' 
-              ? 'Socratic Tutor: Guiding your learning through questions and exploration' 
-              : 'Buddy: Providing direct, straightforward answers to your questions'}
-          </div>
+      {/* Mode description */}
+      <div className={`px-4 py-2 ${theme === 'dark' ? 'text-gray-300' : 'text-gray-600'}`}>
+        {mode === 'socratic' ? (
+          'Socratic: Guiding you to discover answers through thoughtful questions'
+        ) : (
+          'Buddy: Providing direct, straightforward answers to your questions'
+        )}
+      </div>
+
+      {/* Chat messages - Modified to better handle rendering of messages */}
+      <div className={`flex-1 p-4 overflow-y-auto ${theme === 'dark' ? 'bg-gray-900' : 'bg-gray-50'}`}>
+        {messages.map((message, index) => {
+          // Skip messages from other assistant modes
+          if (message.role === 'assistant' && message.assistant && message.assistant !== mode) {
+            return null;
+          }
           
-          {/* Messages */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-4">
-            {messages.map((message, index) => {
-              // Skip messages from the non-active assistant
-              if (message.role === 'assistant' && message.assistant !== activeAssistant) {
-                return null;
-              }
-              
-              return (
-                <div 
-                  key={index} 
-                  className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                >
-                  <div 
-                    className={`max-w-3/4 px-4 py-2 rounded-lg ${
-                      message.role === 'user' 
-                        ? `${colors.userMessage} ${colors.userMessageText}` 
-                        : `${colors.aiMessage} ${colors.aiMessageText}`
-                    }`}
-                  >
-                    {message.content.split('\n').map((line, i) => (
-                      <p key={i} className={i > 0 ? 'mt-2' : ''}>{line}</p>
-                    ))}
-                  </div>
-                </div>
-              );
-            })}
-            <div ref={messagesEndRef} />
-          </div>
-
-          {/* Input form */}
-          <div className="border-t border-gray-200 p-4">
-            <form onSubmit={handleSubmit} className="flex space-x-2">
-              <input
-                type="text"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                placeholder="Ask your question..."
-                disabled={isLoading}
-                className={`flex-1 px-4 py-2 border ${colors.inputBorder} rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50 ${colors.inputBg} ${colors.inputText}`}
-              />
-              <button
-                type="submit"
-                disabled={isLoading}
-                className={`px-4 py-2 ${activeAssistant === 'tutor' ? colors.primary : colors.secondary} ${colors.buttonText} rounded-md hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50`}
+          return (
+            <div 
+              key={index} 
+              className={`mb-4 ${message.role === 'user' ? 'text-right' : 'text-left'}`}
+            >
+              <div 
+                className={`inline-block max-w-[80%] px-4 py-3 rounded-lg ${
+                  message.role === 'user' 
+                    ? theme === 'dark' 
+                      ? 'bg-blue-600 text-white rounded-br-none' 
+                      : 'bg-blue-500 text-white rounded-br-none'
+                    : theme === 'dark'
+                      ? 'bg-gray-800 border border-gray-700 rounded-bl-none'
+                      : 'bg-white border rounded-bl-none'
+                }`}
               >
-                {isLoading ? 'Sending...' : 'Send'}
-              </button>
-            </form>
-            <p className={`mt-2 text-xs ${colors.text}`}>
-              {activeAssistant === 'tutor'
-                ? 'The Socratic Tutor will guide your learning through questions. If you get frustrated, it will detect this and provide more direct answers.'
-                : 'Buddy will give you direct, straightforward answers to your questions without the Socratic method.'}
-            </p>
-          </div>
-        </div>
+                {message.content.split('\n').map((line, i) => (
+                  <p key={i} className={i > 0 ? 'mt-2' : ''}>{line}</p>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+        <div ref={messagesEndRef} />
       </div>
+
+      {/* Input form */}
+      <form onSubmit={handleSubmit} className={`p-4 ${theme === 'dark' ? 'bg-gray-800' : 'bg-white border-t'}`}>
+        <div className="flex">
+          <input
+            ref={inputRef}
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Ask your question..."
+            className={`flex-1 px-4 py-3 rounded-l-md focus:outline-none ${
+              theme === 'dark' 
+                ? 'bg-gray-700 text-white border-gray-600' 
+                : 'bg-white border'
+            }`}
+            disabled={isLoading}
+          />
+          <button
+            type="submit"
+            className={`px-6 py-3 rounded-r-md text-white ${
+              isLoading 
+                ? 'bg-gray-500' 
+                : mode === 'socratic' ? 'bg-purple-600 hover:bg-purple-700' : 'bg-purple-600 hover:bg-purple-700'
+            }`}
+            disabled={isLoading}
+          >
+            {isLoading ? 'Thinking...' : 'Send'}
+          </button>
+        </div>
+        <p className={`mt-2 text-xs ${theme === 'dark' ? 'text-gray-300' : 'text-gray-600'}`}>
+          {mode === 'socratic'
+            ? 'The Socratic Tutor will guide your learning through questions. If you get frustrated, it will detect this and provide more direct answers.'
+            : 'Buddy will give you direct, straightforward answers to your questions without the Socratic method.'}
+        </p>
+      </form>
     </div>
   );
-} 
+}
